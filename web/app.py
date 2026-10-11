@@ -10,6 +10,7 @@ import json
 import hmac
 import time
 import base64
+import binascii
 import hashlib
 import subprocess
 
@@ -20,14 +21,47 @@ from flask import (
     render_template, Response, jsonify, abort,
 )
 
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.exceptions import InvalidTag
+
 # --- Configuration ------------------------------------------------------------
 # All configuration comes from the environment (set in docker-compose.yml).
+
 DB_HOST = os.environ.get("DB_HOST", "db")
 DB_NAME = os.environ.get("DB_NAME", "notesapp")
 DB_USER = os.environ.get("DB_USER", "notesapp")
 DB_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "notesapp_pg_pw_2024")
 JWT_SECRET = os.environ.get("JWT_SECRET", "s3cr3t")
 SECRET_KEY = os.environ.get("SECRET_KEY", "dev-session-key")
+
+key = base64.b64decode(os.environ["AES_KEY"])
+assert len(key) == 32, "AES_KEY must decode to 32 bytes"
+
+
+def decrypt_comment(text):
+    if not text:
+        return text
+    try:
+        raw = base64.b64decode(text, validate=True)
+    except (binascii.Error, ValueError):
+        return text
+    if len(raw) < 12 + 16:
+        return text
+    try:
+        return AESGCM(key).decrypt(raw[:12], raw[12:], None).decode("utf-8")
+    except (InvalidTag, UnicodeDecodeError) as exc:
+        raise ValueError(
+            "Unable to decrypt comment; verify that AES_KEY matches the encryption key."
+        ) from exc
+
+
+def encrypt_comment(text):
+    if not text:
+        return text
+    nonce = os.urandom(12)
+    ct = AESGCM(key).encrypt(nonce, text.encode("utf-8"), None)
+    return base64.b64encode(nonce + ct).decode()
+
 
 app = Flask(__name__)
 app.secret_key = SECRET_KEY
@@ -194,6 +228,7 @@ def dashboard():
         (session["user_id"],),
     )
     notes = cur.fetchall()
+    notes = [{**n, "comment": decrypt_comment(n["comment"])} for n in notes]
     conn.close()
     return render_template("dashboard.html", notes=notes, token=session.get("token"))
 
@@ -219,6 +254,7 @@ def api_notes(note_id):
     if not note:
         return jsonify({"error": "not found"}), 404
     note["grade"] = float(note["grade"]) if note["grade"] is not None else None
+    note["comment"] = decrypt_comment(note["comment"])
     return jsonify(note)
 
 
@@ -238,6 +274,7 @@ def teacher():
         "JOIN classes c ON c.id = n.class_id ORDER BY c.name, u.username"
     )
     notes = cur.fetchall()
+    notes = [{**n, "comment": decrypt_comment(n["comment"])} for n in notes]
     cur.execute("SELECT id, username FROM users WHERE role = 'student' ORDER BY username")
     students = cur.fetchall()
     conn.close()
@@ -253,7 +290,7 @@ def grades():
     student_id = request.form.get("student_id")
     class_id = request.form.get("class_id")
     grade = request.form.get("grade")
-    comment = request.form.get("comment", "")
+    comment = encrypt_comment(request.form.get("comment", ""))
     conn = get_db()
     cur = conn.cursor()
     if note_id:
@@ -294,6 +331,7 @@ def export_csv():
             "JOIN classes c ON c.id = n.class_id ORDER BY c.name, u.username"
         )
     rows = cur.fetchall()
+    rows = [{**r, "comment": decrypt_comment(r["comment"])} for r in rows]
     conn.close()
     buf = io.StringIO()
     writer = csv.writer(buf)
