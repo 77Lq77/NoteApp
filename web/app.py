@@ -12,6 +12,7 @@ import time
 import base64
 import binascii
 import hashlib
+import ipaddress
 import subprocess
 
 import psycopg2
@@ -158,6 +159,26 @@ def login_required(role=None):
     return True
 
 
+def valid_ping_host(host):
+    if not host or "%" in host:
+        return False
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        hostname = host[:-1] if host.endswith(".") else host
+        if not hostname or len(hostname) > 253:
+            return False
+        labels = hostname.split(".")
+        return all(
+            1 <= len(label) <= 63
+            and label[0].isalnum()
+            and label[-1].isalnum()
+            and all(char.isascii() and (char.isalnum() or char == "-") for char in label)
+            for label in labels
+        )
+
+
 # --- Routes -------------------------------------------------------------------
 @app.route("/")
 def index():
@@ -178,19 +199,18 @@ def login():
     if request.method == "POST":
         username = request.form.get("username", "")
         password = request.form.get("password", "")
-        # Flaw #8: SQL injection. Query built by string concatenation, no params.
         query = (
             "SELECT id, username, role FROM users "
-            "WHERE username = '" + username + "' AND password = '" + password + "'"
+            "WHERE username = %s AND password = %s"
         )
         conn = get_db()
         cur = conn.cursor()
         try:
-            cur.execute(query)
+            cur.execute(query, (username, password))
             row = cur.fetchone()
-        except Exception as e:
-            # Keep the raw error visible - helps the SQLi session.
-            error = f"Query error: {e}"
+        except psycopg2.Error as exc:
+            log(f"login query error: {exc}")
+            error = "Login failed."
             row = None
         conn.close()
         if row:
@@ -240,22 +260,29 @@ def api_notes(note_id):
         return jsonify({"error": "unauthorized"}), 401
     conn = get_db()
     cur = conn.cursor()
-    # Flaw #7 (IDOR): the owner of the note is never checked. Any authenticated
-    # caller can read any note id. Flaw #4: `ident` may come from a forged token.
     cur.execute(
         "SELECT n.id, n.student_id, n.class_id, n.grade, n.comment, "
-        "u.username AS student, c.name AS class_name "
+        "u.username AS student, c.name AS class_name, c.teacher_id "
         "FROM notes n JOIN users u ON u.id = n.student_id "
         "JOIN classes c ON c.id = n.class_id WHERE n.id = %s",
         (note_id,),
     )
     note = cur.fetchone()
     conn.close()
-    if not note:
+    if not note or not can_read_note(ident, note):
         return jsonify({"error": "not found"}), 404
     note["grade"] = float(note["grade"]) if note["grade"] is not None else None
     note["comment"] = decrypt_comment(note["comment"])
     return jsonify(note)
+
+
+def can_read_note(ident, note):
+    role, user_id = ident.get("role"), ident.get("user_id")
+    if role == "student":
+        return note["student_id"] == user_id
+    if role == "teacher":
+        return note["teacher_id"] == user_id
+    return False
 
 
 @app.route("/teacher")
@@ -264,18 +291,29 @@ def teacher():
         return redirect(url_for("login"))
     conn = get_db()
     cur = conn.cursor()
-    # A teacher sees every class (no owner scoping - broken access control).
-    cur.execute("SELECT id, name, teacher_id FROM classes ORDER BY name")
+    cur.execute(
+        "SELECT id, name, teacher_id FROM classes "
+        "WHERE teacher_id = %s ORDER BY name",
+        (session["user_id"],),
+    )
     classes = cur.fetchall()
     cur.execute(
         "SELECT n.id, n.grade, n.comment, n.student_id, n.class_id, "
         "u.username AS student, c.name AS class_name "
         "FROM notes n JOIN users u ON u.id = n.student_id "
-        "JOIN classes c ON c.id = n.class_id ORDER BY c.name, u.username"
+        "JOIN classes c ON c.id = n.class_id "
+        "WHERE c.teacher_id = %s ORDER BY c.name, u.username",
+        (session["user_id"],),
     )
     notes = cur.fetchall()
     notes = [{**n, "comment": decrypt_comment(n["comment"])} for n in notes]
-    cur.execute("SELECT id, username FROM users WHERE role = 'student' ORDER BY username")
+    cur.execute(
+        "SELECT DISTINCT u.id, u.username FROM users u "
+        "JOIN enrollments e ON e.student_id = u.id "
+        "JOIN classes c ON c.id = e.class_id "
+        "WHERE u.role = 'student' AND c.teacher_id = %s ORDER BY u.username",
+        (session["user_id"],),
+    )
     students = cur.fetchall()
     conn.close()
     return render_template("teacher.html", classes=classes, notes=notes, students=students)
@@ -295,10 +333,28 @@ def grades():
     cur = conn.cursor()
     if note_id:
         cur.execute(
+            "SELECT c.teacher_id FROM notes n "
+            "JOIN classes c ON c.id = n.class_id WHERE n.id = %s",
+            (note_id,),
+        )
+        row = cur.fetchone()
+        if not row or row["teacher_id"] != session["user_id"]:
+            conn.close()
+            abort(403)
+        cur.execute(
             "UPDATE notes SET grade = %s, comment = %s WHERE id = %s",
             (grade, comment, note_id),
         )
     else:
+        cur.execute(
+            "SELECT 1 FROM classes c "
+            "JOIN enrollments e ON e.class_id = c.id "
+            "WHERE c.id = %s AND c.teacher_id = %s AND e.student_id = %s",
+            (class_id, session["user_id"], student_id),
+        )
+        if not cur.fetchone():
+            conn.close()
+            abort(403)
         cur.execute(
             "INSERT INTO notes (student_id, class_id, grade, comment) "
             "VALUES (%s, %s, %s, %s)",
@@ -320,15 +376,18 @@ def export_csv():
         cur.execute(
             "SELECT u.username AS student, c.name AS class, n.grade, n.comment "
             "FROM notes n JOIN users u ON u.id = n.student_id "
-            "JOIN classes c ON c.id = n.class_id WHERE n.class_id = %s "
+            "JOIN classes c ON c.id = n.class_id "
+            "WHERE n.class_id = %s AND c.teacher_id = %s "
             "ORDER BY u.username",
-            (class_id,),
+            (class_id, session["user_id"]),
         )
     else:
         cur.execute(
             "SELECT u.username AS student, c.name AS class, n.grade, n.comment "
             "FROM notes n JOIN users u ON u.id = n.student_id "
-            "JOIN classes c ON c.id = n.class_id ORDER BY c.name, u.username"
+            "JOIN classes c ON c.id = n.class_id "
+            "WHERE c.teacher_id = %s ORDER BY c.name, u.username",
+            (session["user_id"],),
         )
     rows = cur.fetchall()
     rows = [{**r, "comment": decrypt_comment(r["comment"])} for r in rows]
@@ -361,19 +420,22 @@ def admin():
 
 @app.route("/admin/ping", methods=["POST"])
 def admin_ping():
-    # Flaw #11: no CSRF token. Flaw #9: command injection via os/system shell.
     if not login_required("admin"):
         return redirect(url_for("login"))
-    host = request.form.get("host", "")
-    # Host is concatenated straight into a shell command.
-    cmd = "ping -c 1 " + host
+    host = request.form.get("host", "").strip()
+    if not valid_ping_host(host):
+        output = "Invalid host."
+        return render_template("admin.html", users=_all_users(), classes=_all_classes(),
+                               ping_result=output)
     try:
         result = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=10,
+            ["ping", "-c", "1", host],
+            capture_output=True, text=True, timeout=10,
         )
         output = result.stdout + result.stderr
-    except Exception as e:
-        output = str(e)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        log(f"admin ping failed host={host!r}: {exc}")
+        output = "Ping failed."
     log(f"admin ping host={host!r}")
     return render_template("admin.html", users=_all_users(), classes=_all_classes(),
                            ping_result=output)

@@ -9,8 +9,6 @@ services:
       - pgdata:/var/lib/postgresql/data
       - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
       - ./db/enrollments_encrypted.sql:/docker-entrypoint-initdb.d/02-encrypted.sql:ro
-    ports:
-      - "5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U notesapp -d notesapp"]
       interval: 3s
@@ -33,11 +31,6 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    # Flaw #13: the container runs as root (see Dockerfile) and mounts more than it
-    # needs - the host Docker socket and the whole project tree are exposed to it.
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - .:/host
 
 volumes:
   pgdata:
