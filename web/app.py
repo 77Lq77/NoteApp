@@ -34,6 +34,9 @@ DB_USER = os.environ.get("DB_USER", "notesapp")
 DB_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "notesapp_pg_pw_2024")
 JWT_SECRET = os.environ.get("JWT_SECRET", "s3cr3t")
 SECRET_KEY = os.environ.get("SECRET_KEY", "dev-session-key")
+NOTESAPP_SECRET_KEY = os.environ.get("NOTESAPP_SECRET_KEY")
+if not NOTESAPP_SECRET_KEY:
+    raise RuntimeError("NOTESAPP_SECRET_KEY must be set in the environment.")
 
 key = base64.b64decode(os.environ["AES_KEY"])
 assert len(key) == 32, "AES_KEY must decode to 32 bytes"
@@ -397,9 +400,18 @@ def export_csv():
     writer.writerow(["student", "class", "grade", "comment"])
     for r in rows:
         writer.writerow([r["student"], r["class"], r["grade"], r["comment"]])
+    csv_bytes = buf.getvalue().encode("utf-8")
+    signature = hmac.new(
+        NOTESAPP_SECRET_KEY.encode("utf-8"),
+        csv_bytes,
+        hashlib.sha256,
+    ).hexdigest()
     return Response(
-        buf.getvalue(), mimetype="text/csv",
-        headers={"Content-Disposition": "attachment; filename=grades.csv"},
+        csv_bytes, mimetype="text/csv",
+        headers={
+            "Content-Disposition": "attachment; filename=grades.csv",
+            "X-CSV-HMAC-SHA256": signature,
+        },
     )
 
 
