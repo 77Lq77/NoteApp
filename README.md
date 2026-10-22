@@ -1,3 +1,6 @@
+name：雷晴 Leah
+student id: 2023905937
+
 # NotesApp
 
 A small grades application used throughout the Computer Security course. Teachers
