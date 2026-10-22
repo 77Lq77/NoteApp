@@ -21,6 +21,25 @@ automatically. When it is ready, open:
 http://localhost:8080
 ```
 
+## Run with HTTPS (self-signed certificate)
+
+The HTTPS overlay adds nginx on ports 80 and 443 and removes the web service's
+directly published HTTP port. In PowerShell, create the certificate directory
+and a local certificate/private key using OpenSSL in a temporary Docker
+container:
+
+```powershell
+New-Item -ItemType Directory -Force nginx\certs | Out-Null
+docker run --rm -v "${PWD}\nginx\certs:/certs" alpine:3.21 sh -c "apk add --no-cache openssl >/dev/null && openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout /certs/notesapp.key -out /certs/notesapp.crt -subj '/CN=localhost' -addext 'subjectAltName=DNS:localhost,IP:127.0.0.1'"
+docker compose -f docker-compose.yml -f docker-compose.https.yml up -d --build
+```
+
+Open `https://localhost`. The browser will warn because the certificate is
+self-signed; it is suitable only for local lab testing. Do not expose this
+configuration publicly. The certificate and private key under `nginx/certs/`
+are ignored by Git. Port 80 redirects to HTTPS; Flask remains reachable only
+inside the Compose network on port 5000.
+
 ## Test accounts
 
 | Role    | Username      | Password   |
