@@ -17,6 +17,8 @@ import subprocess
 
 import psycopg2
 import psycopg2.extras
+from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHash, VerifyMismatchError
 from flask import (
     Flask, request, session, redirect, url_for,
     render_template, Response, jsonify, abort,
@@ -69,6 +71,13 @@ def encrypt_comment(text):
 
 app = Flask(__name__)
 app.secret_key = SECRET_KEY
+
+ph = PasswordHasher()
+
+
+def is_argon2_hash(value: str) -> bool:
+    return value.startswith("$argon2")
+
 
 LOG_FILE = os.environ.get("NOTESAPP_LOG", "/var/log/notesapp/app.log")
 
@@ -203,20 +212,41 @@ def login():
         username = request.form.get("username", "")
         password = request.form.get("password", "")
         query = (
-            "SELECT id, username, role FROM users "
-            "WHERE username = %s AND password = %s"
+            "SELECT id, username, role, password FROM users "
+            "WHERE username = %s"
         )
         conn = get_db()
         cur = conn.cursor()
         try:
-            cur.execute(query, (username, password))
+            cur.execute(query, (username,))
             row = cur.fetchone()
         except psycopg2.Error as exc:
             log(f"login query error: {exc}")
             error = "Login failed."
             row = None
         conn.close()
+        authenticated = False
         if row:
+            stored = row["password"]
+            if is_argon2_hash(stored):
+                try:
+                    ph.verify(stored, password)
+                    authenticated = True
+                except (VerifyMismatchError, InvalidHash):
+                    authenticated = False
+            elif stored == password:
+                authenticated = True
+                new_hash = ph.hash(password)
+                conn = get_db()
+                try:
+                    conn.cursor().execute(
+                        "UPDATE users SET password = %s WHERE id = %s",
+                        (new_hash, row["id"]),
+                    )
+                finally:
+                    conn.close()
+                log(f"upgraded {row['username']} to argon2")
+        if authenticated:
             session["user_id"] = row["id"]
             session["username"] = row["username"]
             session["role"] = row["role"]
