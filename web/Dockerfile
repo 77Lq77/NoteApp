@@ -16,7 +16,7 @@ RUN groupadd --system notesapp \
     && useradd --system --gid notesapp --home-dir /app --no-create-home \
         --shell /usr/sbin/nologin notesapp \
     && mkdir -p /var/log/notesapp /app/backups \
-    && printf 'DB_PASSWORD=notesapp_pg_pw_2024\nJWT_SECRET=s3cr3t\n' > /app/config.env \
+    && printf 'DB_PASSWORD=notesapp_pg_pw_2024\n' > /app/config.env \
     && printf '%s\n' '-- nightly dump of users table' \
         'admin:admin123:admin' 'prof.turing:teach123:teacher' > /app/backups/users_backup.sql \
     && touch /var/log/notesapp/app.log \

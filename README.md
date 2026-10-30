@@ -60,6 +60,13 @@ e.g. `bob` / `bobpw`.)
 - PostgreSQL 15
 - Docker Compose (`web` and `db` services)
 
+## Local secrets
+
+Set `JWT_SECRET` in your local `.env` file; Compose loads it for the web service.
+Generate a strong value with `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
+The `.env` file is ignored by Git. In production, load secrets from a secrets
+manager and never commit their values to source control.
+
 ## Reset
 
 ```
