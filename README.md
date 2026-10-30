@@ -57,15 +57,26 @@ e.g. `bob` / `bobpw`.)
 ## Stack
 
 - Python 3.11 + Flask (server-rendered Jinja2 pages and a small JSON API)
+- JWTs are verified with HS256 only; the application rejects `alg: none` tokens.
 - PostgreSQL 15
 - Docker Compose (`web` and `db` services)
 
 ## Local secrets
 
-Set `JWT_SECRET` in your local `.env` file; Compose loads it for the web service.
-Generate a strong value with `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
-The `.env` file is ignored by Git. In production, load secrets from a secrets
-manager and never commit their values to source control.
+The web service requires `AES_KEY`, `NOTESAPP_SECRET_KEY`, and `JWT_SECRET` in
+your local `.env` file. Compose loads these values for the web service, and the
+application will not start without `JWT_SECRET`. Generate fresh local values
+with:
+
+```powershell
+python -c "import base64, secrets; print('AES_KEY=' + base64.b64encode(secrets.token_bytes(32)).decode()); print('NOTESAPP_SECRET_KEY=' + secrets.token_urlsafe(32)); print('JWT_SECRET=' + secrets.token_urlsafe(32))"
+```
+
+Copy `.env.example` to `.env` and replace its placeholder values with the
+generated values. The `.env` file is ignored by Git. Changing `JWT_SECRET`
+invalidates previously issued JWTs, so users must log in again. In production,
+load secrets from a secrets manager and never commit their values to source
+control.
 
 ## Reset
 
