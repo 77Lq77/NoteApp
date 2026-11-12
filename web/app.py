@@ -308,8 +308,8 @@ def can_read_note(ident, note):
     role, user_id = ident.get("role"), ident.get("user_id")
     if role == "student":
         return note["student_id"] == user_id
-    if role == "teacher":
-        return note["teacher_id"] == user_id
+    if role in ("teacher", "admin"):
+        return True
     return False
 
 
