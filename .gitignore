@@ -12,6 +12,7 @@ venv/
 # Local env overrides
 .env
 .env.local
+.jar
 
 # Local self-signed TLS certificate and private key
 nginx/certs/
